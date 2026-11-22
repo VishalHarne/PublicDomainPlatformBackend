@@ -1,6 +1,6 @@
 # Public Domain Platform email service
 
-A standalone Spring Boot microservice with three APIs. It sends submissions by SMTP and reads them from the recipient mailbox using IMAP. There is no database, message broker, or service registry.
+A standalone Spring Boot microservice. It supports email submissions and IMAP retrieval, as well as separate PostgreSQL-backed submission APIs.
 
 ## Local ports
 
@@ -52,7 +52,7 @@ The included `render.yaml` and `Dockerfile` deploy the service as a **paid Start
 
 1. Push the repository to GitHub, then create a Render Blueprint from the repository. Render will build the Docker image and start it with the `render` Spring profile.
 2. Provide `SMTP_HOST`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `MAIL_FROM`, and `MAIL_RECIPIENT` in Render's environment settings. Use a provider-specific app password if needed. Do not commit credentials or upload `.env`; the Docker build excludes it. `SMTP_PORT` defaults to 587 with required STARTTLS. IMAP settings are not needed on Render because retrieval is disabled.
-3. `CORS_ALLOWED_ORIGINS` in `render.yaml` allows `https://omraje.in` and `https://vishalharne.github.io` (including the GitHub Pages site at `/lovable-OmRaje/`). If the website uses additional origins, add their exact HTTPS origins there, separated by commas and without paths or trailing slashes. CORS is not authentication.
+3. `CORS_ALLOWED_ORIGINS` in `render.yaml` allows `https://omraje.in`, `https://www.omraje.in`, and the GitHub Pages site at `https://vishalharne.github.io/lovable-OmRaje/`. For CORS, the GitHub Pages entry is the origin `https://vishalharne.github.io`; origin values must not include paths or trailing slashes. If the website uses additional origins, add their exact HTTPS origins there, separated by commas. CORS is not authentication.
 4. Create a [Cloudflare Turnstile widget](https://developers.cloudflare.com/turnstile/get-started/) for the website's hostname. Set its **secret key** as `TURNSTILE_SECRET_KEY` in Render; keep it private. Add the public site key and widget to each website submission form.
 5. Configure the website's backend URL to the Render HTTPS URL. Send the freshly generated widget token in the `X-Turnstile-Token` header with each request to `/submitgrievances` or `/submitResume`. Reset the widget and obtain a new token after each submission attempt; tokens expire and are single-use. The backend returns 400 for a missing token, 403 for a failed verification, and 503 when verification is unavailable. These requests will fail until the website is updated.
 
@@ -64,8 +64,16 @@ Local mode does not require Turnstile. To test it locally, set `app.turnstile.en
 
 ## APIs
 
-All submission data must be a non-empty JSON object. The service preserves the fields provided; define and validate any required business fields in the calling application.
-On Render, both submission endpoints additionally require a fresh `X-Turnstile-Token` header.
+### Database submission confirmations
+
+`POST /api/grievances` and `POST /api/applications` send a confirmation using the configured SMTP account after the database transaction commits. The email contains the database-generated grievance or application ID. Grievances use `contactValue` when `contactType` is `email`; applications use the optional `email` field. Submissions without an email address are still accepted.
+
+The JSON response includes `id`, `status`, and `emailStatus`: `sent` means the SMTP server accepted the confirmation (not that it was delivered), `failed` means SMTP acceptance could not be confirmed, and `not_requested` means no email was provided. A failed email does not undo the saved submission; retain the returned ID rather than resubmitting. Confirmation emails are not retried automatically, and a timeout can leave delivery uncertain.
+
+### Email submissions
+
+All email submission data must be a non-empty JSON object. The service preserves the fields provided; define and validate any required business fields in the calling application.
+On Render, both email submission endpoints additionally require a fresh `X-Turnstile-Token` header.
 
 ### Submit a grievance
 
