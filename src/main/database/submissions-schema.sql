@@ -1,5 +1,5 @@
 -- PostgreSQL schema for grievance and CV submissions.
--- Store CV file bytes in private object storage; this schema stores metadata only.
+-- Legacy resume metadata is retained for existing records and retention cleanup.
 -- Timestamps use timestamptz so date and time are retained together with timezone.
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS public.grievance_submissions (
   submitted_name text NOT NULL,
   contact_type public.grievance_contact_type NOT NULL,
   contact_value text NOT NULL,
+  submitted_email text,
   topic public.grievance_topic NOT NULL,
   message text NOT NULL,
   status public.grievance_status NOT NULL DEFAULT 'received',
@@ -94,6 +95,7 @@ CREATE TABLE IF NOT EXISTS public.grievance_submissions (
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT grievance_name_not_blank CHECK (btrim(submitted_name) <> ''),
   CONSTRAINT grievance_contact_not_blank CHECK (btrim(contact_value) <> ''),
+  CONSTRAINT grievance_email_not_blank CHECK (submitted_email IS NULL OR btrim(submitted_email) <> ''),
   CONSTRAINT grievance_message_length CHECK (
     char_length(btrim(message)) BETWEEN 5 AND 2000
   ),
@@ -292,7 +294,5 @@ CREATE TRIGGER candidate_status_history_on_change
   FOR EACH ROW EXECUTE FUNCTION public.record_candidate_status_change();
 
 -- Normalize candidate mobile numbers to E.164 before resolving/creating people records.
--- Link a grievance to a person when its submitted contact is a phone number that can
--- be normalized; email-only grievance contacts may leave person_id NULL.
--- Upload CVs to private object storage and save only their key and verified metadata.
--- Generate short-lived signed download URLs in the backend; never store public URLs here.
+-- New grievances use a normalized phone contact and an optional submitted email.
+-- Historical email-only grievances may leave person_id NULL.

@@ -16,30 +16,25 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 class DatabaseSubmissionServiceTest {
-    private final ResumeStorage storage = mock(ResumeStorage.class);
     private final DatabaseSubmissionService service = new DatabaseSubmissionService(
-            "jdbc:postgresql://db.example/submissions", "user", "password", storage);
+            "jdbc:postgresql://db.example/submissions", "user", "password");
     private final DatabaseSubmissionValidator.Application app = new DatabaseSubmissionValidator.Application(
-            "नाम", "+919876543210", null, "job_seeker", "पुणे", "v1");
-    private final ResumeStorage.Document document = new ResumeStorage.Document(
-            "a.pdf", "application/pdf", new byte[]{1}, "a".repeat(64));
+            "नाम", "+919876543210", "a@example.com", "job_seeker", "पुणे", "v1");
 
     @Test
-    void rollsBackAndDeletesUploadWhenInsertFails() throws Exception {
+    void rollsBackWhenInsertFails() throws Exception {
         Connection connection = mock(Connection.class);
         when(connection.prepareStatement(anyString())).thenThrow(new SQLException("failure"));
-        when(storage.upload(document)).thenReturn("key");
         try (MockedStatic<DriverManager> driver = mockStatic(DriverManager.class)) {
             driver.when(() -> DriverManager.getConnection(anyString(), any())).thenReturn(connection);
-            assertThrows(ResponseStatusException.class, () -> service.application(app, document));
+            assertThrows(ResponseStatusException.class, () -> service.application(app));
             verify(connection).rollback();
-            verify(storage).cleanup("key");
             verify(connection, never()).commit();
         }
     }
 
     @Test
-    void doesNotDeletePossiblyCommittedFileWhenCommitFails() throws Exception {
+    void doesNotRollbackWhenCommitOutcomeIsUncertain() throws Exception {
         Connection connection = mock(Connection.class);
         PreparedStatement statement = mock(PreparedStatement.class);
         ResultSet result = mock(ResultSet.class);
@@ -48,11 +43,9 @@ class DatabaseSubmissionServiceTest {
         when(result.next()).thenReturn(true);
         when(result.getObject(1, UUID.class)).thenReturn(UUID.randomUUID());
         doThrow(new SQLException("connection lost")).when(connection).commit();
-        when(storage.upload(document)).thenReturn("key");
         try (MockedStatic<DriverManager> driver = mockStatic(DriverManager.class)) {
             driver.when(() -> DriverManager.getConnection(anyString(), any())).thenReturn(connection);
-            assertThrows(ResponseStatusException.class, () -> service.application(app, document));
-            verify(storage, never()).cleanup(anyString());
+            assertThrows(ResponseStatusException.class, () -> service.application(app));
             verify(connection, never()).rollback();
         }
     }
@@ -79,11 +72,43 @@ class DatabaseSubmissionServiceTest {
         when(application.getObject(1, UUID.class)).thenReturn(applicationId);
         try (MockedStatic<DriverManager> driver = mockStatic(DriverManager.class)) {
             driver.when(() -> DriverManager.getConnection(anyString(), any())).thenReturn(connection);
-            assertEquals(applicationId, service.application(app, null));
+            assertEquals(applicationId, service.application(app));
             verify(connection).commit();
             verify(insertApplication).setObject(1, personId);
             verify(insertApplication).setString(3, "+919876543210");
+            verify(insertApplication).setString(4, "a@example.com");
+            verify(connection, times(3)).prepareStatement(anyString());
+            verify(connection, never()).prepareStatement(contains("resume_documents"));
             verify(connection, never()).prepareStatement(startsWith("UPDATE"));
+        }
+    }
+
+    @Test
+    void savesGrievancePhoneAndOptionalEmailSnapshot() throws Exception {
+        Connection connection = mock(Connection.class);
+        PreparedStatement insertPerson = mock(PreparedStatement.class);
+        PreparedStatement insertGrievance = mock(PreparedStatement.class);
+        ResultSet person = mock(ResultSet.class);
+        ResultSet grievance = mock(ResultSet.class);
+        UUID personId = UUID.randomUUID();
+        UUID grievanceId = UUID.randomUUID();
+        when(connection.prepareStatement(anyString())).thenReturn(insertPerson, insertGrievance);
+        when(insertPerson.executeQuery()).thenReturn(person);
+        when(person.next()).thenReturn(true);
+        when(person.getObject(1, UUID.class)).thenReturn(personId);
+        when(insertGrievance.executeQuery()).thenReturn(grievance);
+        when(grievance.next()).thenReturn(true);
+        when(grievance.getObject(1, UUID.class)).thenReturn(grievanceId);
+        var data = new DatabaseSubmissionValidator.Grievance("A", "+919876543210", "a@example.com",
+                "other", "message", "v1");
+        try (MockedStatic<DriverManager> driver = mockStatic(DriverManager.class)) {
+            driver.when(() -> DriverManager.getConnection(anyString(), any())).thenReturn(connection);
+            assertEquals(grievanceId, service.grievance(data));
+            verify(insertPerson).setString(1, "+919876543210");
+            verify(insertGrievance).setObject(1, personId);
+            verify(insertGrievance).setString(3, "+919876543210");
+            verify(insertGrievance).setString(4, "a@example.com");
+            verify(connection).commit();
         }
     }
 }

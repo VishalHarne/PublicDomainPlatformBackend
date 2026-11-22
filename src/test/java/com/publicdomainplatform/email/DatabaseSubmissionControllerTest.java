@@ -30,12 +30,11 @@ class DatabaseSubmissionControllerTest {
     @MockitoBean DatabaseTurnstileVerifier turnstile;
     @MockitoBean DatabaseSubmissionValidator validator;
     @MockitoBean DatabaseSubmissionService service;
-    @MockitoBean ResumeStorage storage;
     @MockitoBean SubmissionConfirmationService confirmation;
 
     @Test
     void grievanceReturnsOnlyAfterServiceReturns() throws Exception {
-        var grievance = new DatabaseSubmissionValidator.Grievance("नाम", "email", "a@example.com",
+        var grievance = new DatabaseSubmissionValidator.Grievance("नाम", "+919876543210", "a@example.com",
                 "other", "message", "v1");
         when(validator.grievance(any())).thenReturn(grievance);
         UUID id = UUID.randomUUID();
@@ -59,17 +58,17 @@ class DatabaseSubmissionControllerTest {
         mvc.perform(post("/api/grievances").secure(true).contentType(MediaType.APPLICATION_JSON)
                         .header("X-Turnstile-Token", "bad").content("{}"))
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.error").exists());
-        verifyNoInteractions(validator, service, storage, confirmation);
+        verifyNoInteractions(validator, service, confirmation);
     }
 
     @Test
-    void acceptsJsonBlobPartWithAndWithoutFile() throws Exception {
-        var app = new DatabaseSubmissionValidator.Application("A", "+919876543210", null,
+    void acceptsJsonBlobPartWithAndWithoutDiscardedFile() throws Exception {
+        var app = new DatabaseSubmissionValidator.Application("A", "+919876543210", "a@example.com",
                 "job_seeker", "Pune", "v1");
         when(validator.application(any())).thenReturn(app);
         UUID id = UUID.randomUUID();
-        when(service.application(eq(app), nullable(ResumeStorage.Document.class))).thenReturn(id);
-        when(confirmation.send(null, "application", id)).thenReturn("not_requested");
+        when(service.application(app)).thenReturn(id);
+        when(confirmation.sendApplication(app, id)).thenReturn("sent");
         for (boolean withFile : new boolean[]{false, true}) {
             MockPart data = new MockPart("data", "blob", "{}".getBytes(StandardCharsets.UTF_8));
             data.getHeaders().setContentType(MediaType.APPLICATION_JSON);
@@ -77,10 +76,26 @@ class DatabaseSubmissionControllerTest {
             if (withFile) request.file(new MockMultipartFile("file", "a.pdf", "application/pdf", new byte[]{1}));
             mvc.perform(request.secure(true).header("X-Turnstile-Token", "fresh"))
                     .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("submitted"))
-                    .andExpect(jsonPath("$.emailStatus").value("not_requested"));
+                    .andExpect(jsonPath("$.emailStatus").value("sent"));
         }
-        verify(service, times(2)).application(eq(app), nullable(ResumeStorage.Document.class));
-        verify(confirmation, times(2)).send(null, "application", id);
+        verify(service, times(2)).application(app);
+        verify(confirmation, times(2)).sendApplication(app, id);
+    }
+
+    @Test
+    void acceptsApplicationAsJson() throws Exception {
+        var app = new DatabaseSubmissionValidator.Application("A", "+919876543210", "a@example.com",
+                "job_seeker", "Pune", "v1");
+        UUID id = UUID.randomUUID();
+        when(validator.application(any())).thenReturn(app);
+        when(service.application(app)).thenReturn(id);
+        when(confirmation.sendApplication(app, id)).thenReturn("sent");
+        mvc.perform(post("/api/applications").secure(true).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.id").value(id.toString()))
+                .andExpect(jsonPath("$.emailStatus").value("sent"));
+        var order = inOrder(service, confirmation);
+        order.verify(service).application(app);
+        order.verify(confirmation).sendApplication(app, id);
     }
 
     @Test
@@ -89,8 +104,8 @@ class DatabaseSubmissionControllerTest {
                 "job_seeker", "Pune", "v1");
         UUID id = UUID.randomUUID();
         when(validator.application(any())).thenReturn(app);
-        when(service.application(app, null)).thenReturn(id);
-        when(confirmation.send("a@example.com", "application", id)).thenReturn("failed");
+        when(service.application(app)).thenReturn(id);
+        when(confirmation.sendApplication(app, id)).thenReturn("failed");
         MockPart data = new MockPart("data", "blob", "{}".getBytes(StandardCharsets.UTF_8));
         data.getHeaders().setContentType(MediaType.APPLICATION_JSON);
         mvc.perform(multipart("/api/applications").part(data).secure(true))
@@ -99,13 +114,13 @@ class DatabaseSubmissionControllerTest {
                 .andExpect(jsonPath("$.status").value("submitted"))
                 .andExpect(jsonPath("$.emailStatus").value("failed"));
         var order = inOrder(service, confirmation);
-        order.verify(service).application(app, null);
-        order.verify(confirmation).send("a@example.com", "application", id);
+        order.verify(service).application(app);
+        order.verify(confirmation).sendApplication(app, id);
     }
 
     @Test
     void phoneGrievanceDoesNotRequestEmail() throws Exception {
-        var grievance = new DatabaseSubmissionValidator.Grievance("A", "phone", "+919876543210",
+        var grievance = new DatabaseSubmissionValidator.Grievance("A", "+919876543210", null,
                 "other", "message", "v1");
         UUID id = UUID.randomUUID();
         when(validator.grievance(any())).thenReturn(grievance);
@@ -118,12 +133,24 @@ class DatabaseSubmissionControllerTest {
 
     @Test
     void doesNotSendConfirmationWhenDatabaseInsertFails() throws Exception {
-        var grievance = new DatabaseSubmissionValidator.Grievance("A", "email", "a@example.com",
+        var grievance = new DatabaseSubmissionValidator.Grievance("A", "+919876543210", "a@example.com",
                 "other", "message", "v1");
         when(validator.grievance(any())).thenReturn(grievance);
         when(service.grievance(grievance)).thenThrow(
                 new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Database submission unavailable"));
         mvc.perform(post("/api/grievances").secure(true).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isServiceUnavailable());
+        verifyNoInteractions(confirmation);
+    }
+
+    @Test
+    void doesNotSendApplicationConfirmationWhenDatabaseInsertFails() throws Exception {
+        var app = new DatabaseSubmissionValidator.Application("A", "+919876543210", "a@example.com",
+                "job_seeker", "Pune", "v1");
+        when(validator.application(any())).thenReturn(app);
+        when(service.application(app)).thenThrow(
+                new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Database submission unavailable"));
+        mvc.perform(post("/api/applications").secure(true).contentType(MediaType.APPLICATION_JSON).content("{}"))
                 .andExpect(status().isServiceUnavailable());
         verifyNoInteractions(confirmation);
     }
@@ -144,7 +171,7 @@ class DatabaseSubmissionControllerTest {
 
     @Test
     void allowsLocalFrontendHttpCorsAndRequestsFromLoopback() throws Exception {
-        var grievance = new DatabaseSubmissionValidator.Grievance("Jane", "email", "jane@example.com",
+        var grievance = new DatabaseSubmissionValidator.Grievance("Jane", "+919876543210", "jane@example.com",
                 "other", "message", "v1");
         when(validator.grievance(any())).thenReturn(grievance);
         UUID id = UUID.randomUUID();

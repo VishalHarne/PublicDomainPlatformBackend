@@ -21,32 +21,29 @@ class DatabaseSubmissionService {
     private final String url;
     private final String username;
     private final String password;
-    private final ResumeStorage storage;
 
     DatabaseSubmissionService(@Value("${app.database-submissions.jdbc-url:}") String url,
                               @Value("${app.database-submissions.db-user:}") String username,
-                              @Value("${app.database-submissions.db-password:}") String password,
-                              ResumeStorage storage) {
+                              @Value("${app.database-submissions.db-password:}") String password) {
         this.url = url;
         this.username = username;
         this.password = password;
-        this.storage = storage;
     }
 
     UUID grievance(DatabaseSubmissionValidator.Grievance g) {
-        return transaction(null, connection -> {
-            UUID person = "phone".equals(g.contactType()) ? person(connection, g.contactValue(), g.name()) : null;
+        return transaction(connection -> {
+            UUID person = person(connection, g.phone(), g.name());
             try (PreparedStatement statement = connection.prepareStatement("""
                     INSERT INTO public.grievance_submissions
-                    (person_id, submitted_name, contact_type, contact_value, topic, message,
+                    (person_id, submitted_name, contact_type, contact_value, submitted_email, topic, message,
                      consent_given, consented_at, consent_text_version)
-                    VALUES (?, ?, ?::public.grievance_contact_type, ?, ?::public.grievance_topic, ?, true, now(), ?)
+                    VALUES (?, ?, 'phone', ?, ?, ?::public.grievance_topic, ?, true, now(), ?)
                     RETURNING grievance_id
                     """)) {
                 statement.setObject(1, person);
                 statement.setString(2, g.name());
-                statement.setString(3, g.contactType());
-                statement.setString(4, g.contactValue());
+                statement.setString(3, g.phone());
+                statement.setString(4, g.email());
                 statement.setString(5, g.topic());
                 statement.setString(6, g.message());
                 statement.setString(7, g.consentVersion());
@@ -55,11 +52,9 @@ class DatabaseSubmissionService {
         });
     }
 
-    UUID application(DatabaseSubmissionValidator.Application a, ResumeStorage.Document document) {
-        String key = document == null ? null : storage.upload(document);
-        return transaction(key, connection -> {
+    UUID application(DatabaseSubmissionValidator.Application a) {
+        return transaction(connection -> {
             UUID person = person(connection, a.phone(), a.name());
-            UUID application;
             try (PreparedStatement statement = connection.prepareStatement("""
                     INSERT INTO public.candidate_applications
                     (person_id, submitted_name, submitted_phone, submitted_email, role, town,
@@ -74,26 +69,8 @@ class DatabaseSubmissionService {
                 statement.setString(5, a.role());
                 statement.setString(6, a.town());
                 statement.setString(7, a.consentVersion());
-                application = id(statement);
+                return id(statement);
             }
-            if (document != null) {
-                try (PreparedStatement statement = connection.prepareStatement("""
-                        INSERT INTO public.resume_documents
-                        (application_id, storage_provider, bucket_name, object_key, original_filename,
-                         media_type, size_bytes, sha256_hex)
-                        VALUES (?, 'gcs', ?, ?, ?, ?, ?, ?)
-                        """)) {
-                    statement.setObject(1, application);
-                    statement.setString(2, storage.bucket());
-                    statement.setString(3, key);
-                    statement.setString(4, document.filename());
-                    statement.setString(5, document.mediaType());
-                    statement.setLong(6, document.bytes().length);
-                    statement.setString(7, document.sha256());
-                    statement.executeUpdate();
-                }
-            }
-            return application;
         });
     }
 
@@ -122,7 +99,7 @@ class DatabaseSubmissionService {
         }
     }
 
-    private UUID transaction(String key, Work work) {
+    private UUID transaction(Work work) {
         Connection connection = null;
         boolean commitAttempted = false;
         boolean cleanupSafe = true;
@@ -142,11 +119,6 @@ class DatabaseSubmissionService {
                 } catch (SQLException rollbackFailure) {
                     cleanupSafe = false;
                 }
-            }
-            if (key != null) {
-                if (cleanupSafe) storage.cleanup(key);
-                else log.error("Resume object requires reconciliation after uncertain transaction: bucket={} key={}",
-                        storage.bucket(), key);
             }
             log.warn("Database submission failed; transaction outcome {}", cleanupSafe ? "rolled back" : "uncertain");
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Database submission unavailable");

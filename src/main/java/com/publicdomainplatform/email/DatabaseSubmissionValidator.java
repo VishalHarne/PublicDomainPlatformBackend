@@ -32,28 +32,21 @@ class DatabaseSubmissionValidator {
     Grievance grievance(JsonNode data) {
         object(data);
         String name = required(data, "name", 200);
-        String type = required(data, "contactType", 16);
-        String contact = required(data, "contactValue", 254);
-        if ("phone".equals(type)) {
-            contact = phone(contact);
-        } else if ("email".equals(type)) {
-            contact = email(contact);
-        } else {
-            throw invalid("Invalid contactType");
-        }
+        String phone = phone(required(data, "phone", 40));
+        String email = optional(data, "email", 254);
+        if (email != null) email = email(email);
         String topic = required(data, "topic", 40);
         if (!TOPICS.contains(topic)) throw invalid("Invalid topic");
         String message = required(data, "message", 2000);
         if (length(message) < 5) throw invalid("message must contain at least 5 characters");
-        return new Grievance(name, type, contact, topic, message, consent(data, grievanceVersions));
+        return new Grievance(name, phone, email, topic, message, consent(data, grievanceVersions));
     }
 
     Application application(JsonNode data) {
         object(data);
         String name = required(data, "name", 200);
         String phone = phone(required(data, "phone", 40));
-        String email = optional(data, "email", 254);
-        if (email != null) email = email(email);
+        String email = email(required(data, "email", 254));
         String role = required(data, "role", 32);
         if (!ROLES.contains(role)) throw invalid("Invalid role");
         return new Application(name, phone, email, role, required(data, "town", 200),
@@ -130,7 +123,7 @@ class DatabaseSubmissionValidator {
         return new ResponseStatusException(HttpStatus.BAD_REQUEST, message);
     }
 
-    record Grievance(String name, String contactType, String contactValue, String topic,
+    record Grievance(String name, String phone, String email, String topic,
                      String message, String consentVersion) {}
     record Application(String name, String phone, String email, String role, String town,
                        String consentVersion) {}

@@ -30,7 +30,9 @@ class SubmissionConfirmationServiceTest {
             UUID grievanceId = UUID.randomUUID();
             UUID applicationId = UUID.randomUUID();
             assertEquals("sent", service.send("grievance@example.com", "grievance", grievanceId));
-            assertEquals("sent", service.send("application@example.com", "application", applicationId));
+            var application = new DatabaseSubmissionValidator.Application("Candidate", "+919876543210",
+                    "application@example.com", "job_seeker", "Pune", "v1");
+            assertEquals("sent", service.sendApplication(application, applicationId));
             assertTrue(server.waitForIncomingEmail(5000, 2));
             var messages = server.getReceivedMessages();
             assertEquals("grievance@example.com", messages[0].getAllRecipients()[0].toString());
@@ -39,6 +41,9 @@ class SubmissionConfirmationServiceTest {
             assertEquals("application@example.com", messages[1].getAllRecipients()[0].toString());
             assertTrue(messages[1].getSubject().contains("application"));
             assertTrue(messages[1].getContent().toString().contains(applicationId.toString()));
+            assertTrue(messages[1].getContent().toString().contains("Candidate"));
+            assertTrue(messages[1].getContent().toString().contains("Pune"));
+            assertTrue(messages[1].getContent() instanceof String);
         } finally {
             server.stop();
         }
@@ -51,6 +56,8 @@ class SubmissionConfirmationServiceTest {
         assertEquals("not_requested", service.send(null, "grievance", UUID.randomUUID()));
         verifyNoInteractions(sender);
         doThrow(new MailSendException("SMTP unavailable")).when(sender).send(any(SimpleMailMessage.class));
-        assertEquals("failed", service.send("a@example.com", "application", UUID.randomUUID()));
+        var application = new DatabaseSubmissionValidator.Application("A", "+919876543210",
+                "a@example.com", "job_seeker", "Pune", "v1");
+        assertEquals("failed", service.sendApplication(application, UUID.randomUUID()));
     }
 }

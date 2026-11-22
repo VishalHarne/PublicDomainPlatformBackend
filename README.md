@@ -66,9 +66,33 @@ Local mode does not require Turnstile. To test it locally, set `app.turnstile.en
 
 ### Database submission confirmations
 
-`POST /api/grievances` and `POST /api/applications` send a confirmation using the configured SMTP account after the database transaction commits. The email contains the database-generated grievance or application ID. Grievances use `contactValue` when `contactType` is `email`; applications use the optional `email` field. Submissions without an email address are still accepted.
+`POST /api/grievances` and `POST /api/applications` send a confirmation using the configured SMTP account after the database transaction commits. The email contains the database-generated grievance or application ID. Grievances require `phone` and accept an optional `email`; applications require both. Grievances without an email do not receive email confirmations.
+
+Set `SUBMISSIONS_DATABASE_URL` to `jdbc:postgresql://<host>:5432/<database>` without credentials or query parameters, and set `SUBMISSIONS_DATABASE_USER` and `SUBMISSIONS_DATABASE_PASSWORD` separately. The backend requires TLS with certificate and hostname verification (`verify-full`). Render Postgres internal connections use self-signed certificates and do not support this mode; use the database's external hostname and restrict external access to the backend's outbound IPs. Configure `DATABASE_CORS_ALLOWED_ORIGINS`, `TURNSTILE_SECRET_KEY`, and the `GRIEVANCE_CONSENT_VERSIONS` and `APPLICATION_CONSENT_VERSIONS` allowlists as well. Database submissions require a fresh `X-Turnstile-Token` even in local mode.
 
 The JSON response includes `id`, `status`, and `emailStatus`: `sent` means the SMTP server accepted the confirmation (not that it was delivered), `failed` means SMTP acceptance could not be confirmed, and `not_requested` means no email was provided. A failed email does not undo the saved submission; retain the returned ID rather than resubmitting. Confirmation emails are not retried automatically, and a timeout can leave delivery uncertain.
+
+### Save a grievance
+
+`POST /api/grievances` accepts `application/json`, for example:
+
+```json
+{"name":"Example","phone":"9876543210","email":"example@example.com","topic":"other","message":"Please repair the road","consent":true,"consentTextVersion":"g-v1"}
+```
+
+`phone` is required; `email` may be omitted or empty. Use a configured `GRIEVANCE_CONSENT_VERSIONS` value. The former `contactType` and `contactValue` request fields are no longer used. Before deploying to an existing database, run `src\main\database\grievance-email-migration.sql` once; historical contacts remain unchanged.
+
+### Save a candidate application
+
+`POST /api/applications` accepts `application/json`, or multipart form data with a `data` JSON part. For example:
+
+```json
+{"name":"Example","phone":"9876543210","email":"example@example.com","role":"job_seeker","town":"Pune","consent":true,"consentTextVersion":"a-v1"}
+```
+
+Use an `APPLICATION_CONSENT_VERSIONS` value configured on the backend. The endpoint stores candidate details and sends a confirmation containing the application ID, without a resume attachment. For compatibility it accepts a multipart `file` part but discards it; multipart processing may use temporary files. It does not save new resume objects or metadata. Existing stored resumes are not deleted by this change and remain subject to the existing retention process.
+
+To email the resume to the configured recipient, the website must separately call `/submitResume` with the file. The two requests are independent: success of one does not guarantee success of the other. On Render, obtain a fresh Turnstile token for each request.
 
 ### Email submissions
 

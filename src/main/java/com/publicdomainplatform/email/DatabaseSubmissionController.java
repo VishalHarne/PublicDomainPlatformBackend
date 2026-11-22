@@ -16,7 +16,6 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
 @RestController
@@ -25,17 +24,15 @@ class DatabaseSubmissionController {
     private final DatabaseTurnstileVerifier turnstile;
     private final DatabaseSubmissionValidator validator;
     private final DatabaseSubmissionService service;
-    private final ResumeStorage storage;
     private final ObjectMapper mapper;
     private final SubmissionConfirmationService confirmation;
 
     DatabaseSubmissionController(DatabaseTurnstileVerifier turnstile, DatabaseSubmissionValidator validator,
-                                 DatabaseSubmissionService service, ResumeStorage storage, ObjectMapper mapper,
+                                 DatabaseSubmissionService service, ObjectMapper mapper,
                                  SubmissionConfirmationService confirmation) {
         this.turnstile = turnstile;
         this.validator = validator;
         this.service = service;
-        this.storage = storage;
         this.mapper = mapper;
         this.confirmation = confirmation;
     }
@@ -47,22 +44,31 @@ class DatabaseSubmissionController {
         turnstile.verify(token);
         var grievance = validator.grievance(readJson(request.getInputStream()));
         var id = service.grievance(grievance);
-        String email = "email".equals(grievance.contactType()) ? grievance.contactValue() : null;
         return Map.of("id", id.toString(), "status", "received",
-                "emailStatus", confirmation.send(email, "grievance", id));
+                "emailStatus", confirmation.send(grievance.email(), "grievance", id));
     }
 
     @PostMapping(value = "/api/applications", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     Map<String, String> application(@RequestPart("data") Part data,
-                                    @RequestPart(value = "file", required = false) MultipartFile file,
                                     @RequestHeader(value = "X-Turnstile-Token", required = false) String token)
             throws IOException {
         turnstile.verify(token);
-        var application = validator.application(readJson(data.getInputStream()));
-        var document = storage.validate(file);
-        var id = service.application(application, document);
+        return saveApplication(readJson(data.getInputStream()));
+    }
+
+    @PostMapping(value = "/api/applications", consumes = MediaType.APPLICATION_JSON_VALUE)
+    Map<String, String> applicationJson(HttpServletRequest request,
+                                        @RequestHeader(value = "X-Turnstile-Token", required = false) String token)
+            throws IOException {
+        turnstile.verify(token);
+        return saveApplication(readJson(request.getInputStream()));
+    }
+
+    private Map<String, String> saveApplication(JsonNode data) {
+        var application = validator.application(data);
+        var id = service.application(application);
         return Map.of("id", id.toString(), "status", "submitted",
-                "emailStatus", confirmation.send(application.email(), "application", id));
+                "emailStatus", confirmation.sendApplication(application, id));
     }
 
     private JsonNode readJson(InputStream input) throws IOException {
