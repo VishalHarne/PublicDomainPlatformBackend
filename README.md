@@ -84,15 +84,17 @@ The JSON response includes `id`, `status`, and `emailStatus`: `sent` means the S
 
 ### Save a candidate application
 
-`POST /api/applications` accepts `application/json`, or multipart form data with a `data` JSON part. For example:
+`POST /api/applications` accepts `application/json`, or multipart form data with a `data` JSON part and an optional `file` part. For example:
 
 ```json
 {"name":"Example","phone":"9876543210","email":"example@example.com","role":"job_seeker","town":"Pune","consent":true,"consentTextVersion":"a-v1"}
 ```
 
-Use an `APPLICATION_CONSENT_VERSIONS` value configured on the backend. The endpoint stores candidate details and sends a confirmation containing the application ID, without a resume attachment. For compatibility it accepts a multipart `file` part but discards it; multipart processing may use temporary files. It does not save new resume objects or metadata. Existing stored resumes are not deleted by this change and remain subject to the existing retention process.
+Use an `APPLICATION_CONSENT_VERSIONS` value configured on the backend. The endpoint stores candidate details and sends a confirmation containing the application ID to the applicant. If a non-empty PDF, DOC or DOCX file up to 10 MB is supplied, it sends the CV and application details to `MAIL_RECIPIENT`, with the application ID in the subject. Multipart processing may use temporary files; the CV is not stored in the database. Existing stored resumes are not deleted by this change and remain subject to the existing retention process.
 
-To email the resume to the configured recipient, the website must separately call `/submitResume` with the file. The two requests are independent: success of one does not guarantee success of the other. On Render, obtain a fresh Turnstile token for each request.
+For an existing database without `candidate_applications.submitted_phone`, run `src\main\database\application-phone-migration.sql` once before deploying. It backfills historical applications from the person's current mobile number, which may differ from the original submission. The transaction fails if a historical phone is missing or invalid; correct the affected records before retrying.
+
+The response's `emailStatus` describes the applicant confirmation; `resumeEmailStatus` separately reports `sent`, `failed`, or `not_requested` for the admin CV email. `sent` means SMTP acceptance, not delivery. A failed or uncertain email does not undo the saved application; retain the ID and do not resubmit. Neither email is retried automatically, and a timeout can leave delivery uncertain.
 
 ### Email submissions
 

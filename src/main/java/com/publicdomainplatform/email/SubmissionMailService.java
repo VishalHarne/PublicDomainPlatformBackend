@@ -42,6 +42,17 @@ class SubmissionMailService {
 
     String send(String type, JsonNode data, MultipartFile attachment) throws MessagingException, IOException {
         String id = UUID.randomUUID().toString();
+        send(type, data, attachment, id);
+        return id;
+    }
+
+    void sendApplication(DatabaseSubmissionValidator.Application application, UUID id, MultipartFile attachment)
+            throws MessagingException, IOException {
+        send("resume", mapper.valueToTree(application), attachment, id.toString());
+    }
+
+    private void send(String type, JsonNode data, MultipartFile attachment, String id)
+            throws MessagingException, IOException {
         MimeMessage message = sender.createMimeMessage();
         MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
         helper.setFrom(settings.from());
@@ -53,7 +64,6 @@ class SubmissionMailService {
             helper.addAttachment(attachment.getOriginalFilename(), attachment);
         }
         sender.send(message);
-        return id;
     }
 
     List<Submission> find(Instant from, Instant to) throws MessagingException, IOException {

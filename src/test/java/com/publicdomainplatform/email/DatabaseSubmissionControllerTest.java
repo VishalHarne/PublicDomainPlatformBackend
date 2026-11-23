@@ -10,6 +10,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.mock.web.MockPart;
+import org.springframework.mail.MailSendException;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -31,6 +32,7 @@ class DatabaseSubmissionControllerTest {
     @MockitoBean DatabaseSubmissionValidator validator;
     @MockitoBean DatabaseSubmissionService service;
     @MockitoBean SubmissionConfirmationService confirmation;
+    @MockitoBean SubmissionMailService mailService;
 
     @Test
     void grievanceReturnsOnlyAfterServiceReturns() throws Exception {
@@ -62,7 +64,7 @@ class DatabaseSubmissionControllerTest {
     }
 
     @Test
-    void acceptsJsonBlobPartWithAndWithoutDiscardedFile() throws Exception {
+    void acceptsJsonBlobPartWithAndWithoutFile() throws Exception {
         var app = new DatabaseSubmissionValidator.Application("A", "+919876543210", "a@example.com",
                 "job_seeker", "Pune", "v1");
         when(validator.application(any())).thenReturn(app);
@@ -76,10 +78,62 @@ class DatabaseSubmissionControllerTest {
             if (withFile) request.file(new MockMultipartFile("file", "a.pdf", "application/pdf", new byte[]{1}));
             mvc.perform(request.secure(true).header("X-Turnstile-Token", "fresh"))
                     .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("submitted"))
-                    .andExpect(jsonPath("$.emailStatus").value("sent"));
+                    .andExpect(jsonPath("$.emailStatus").value("sent"))
+                    .andExpect(jsonPath("$.resumeEmailStatus").value(withFile ? "sent" : "not_requested"));
         }
         verify(service, times(2)).application(app);
         verify(confirmation, times(2)).sendApplication(app, id);
+        verify(mailService).sendApplication(eq(app), eq(id), any());
+    }
+
+    @Test
+    void retainsApplicationIdAndSendsConfirmationWhenResumeEmailFails() throws Exception {
+        var app = new DatabaseSubmissionValidator.Application("A", "+919876543210", "a@example.com",
+                "job_seeker", "Pune", "v1");
+        UUID id = UUID.randomUUID();
+        when(validator.application(any())).thenReturn(app);
+        when(service.application(app)).thenReturn(id);
+        when(confirmation.sendApplication(app, id)).thenReturn("sent");
+        doThrow(new MailSendException("SMTP unavailable")).when(mailService).sendApplication(eq(app), eq(id), any());
+        MockPart data = new MockPart("data", "blob", "{}".getBytes(StandardCharsets.UTF_8));
+        data.getHeaders().setContentType(MediaType.APPLICATION_JSON);
+        mvc.perform(multipart("/api/applications").part(data)
+                        .file(new MockMultipartFile("file", "a.pdf", "application/pdf", new byte[]{1})).secure(true))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(id.toString()))
+                .andExpect(jsonPath("$.resumeEmailStatus").value("failed"))
+                .andExpect(jsonPath("$.emailStatus").value("sent"));
+        verify(confirmation).sendApplication(app, id);
+    }
+
+    @Test
+    void rejectsInvalidResumeBeforeSavingApplication() throws Exception {
+        MockPart data = new MockPart("data", "blob", "{}".getBytes(StandardCharsets.UTF_8));
+        data.getHeaders().setContentType(MediaType.APPLICATION_JSON);
+        mvc.perform(multipart("/api/applications").part(data)
+                        .file(new MockMultipartFile("file", "resume.exe", "application/octet-stream", new byte[]{1}))
+                        .secure(true))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(validator, service, confirmation, mailService);
+    }
+
+    @Test
+    void reportsConfirmationFailureSeparatelyFromResumeEmail() throws Exception {
+        var app = new DatabaseSubmissionValidator.Application("A", "+919876543210", "a@example.com",
+                "job_seeker", "Pune", "v1");
+        UUID id = UUID.randomUUID();
+        when(validator.application(any())).thenReturn(app);
+        when(service.application(app)).thenReturn(id);
+        when(confirmation.sendApplication(app, id)).thenReturn("failed");
+        MockPart data = new MockPart("data", "blob", "{}".getBytes(StandardCharsets.UTF_8));
+        data.getHeaders().setContentType(MediaType.APPLICATION_JSON);
+        mvc.perform(multipart("/api/applications").part(data)
+                        .file(new MockMultipartFile("file", "a.pdf", "application/pdf", new byte[]{1})).secure(true))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(id.toString()))
+                .andExpect(jsonPath("$.resumeEmailStatus").value("sent"))
+                .andExpect(jsonPath("$.emailStatus").value("failed"));
+        verify(mailService).sendApplication(eq(app), eq(id), any());
     }
 
     @Test
@@ -92,7 +146,8 @@ class DatabaseSubmissionControllerTest {
         when(confirmation.sendApplication(app, id)).thenReturn("sent");
         mvc.perform(post("/api/applications").secure(true).contentType(MediaType.APPLICATION_JSON).content("{}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.id").value(id.toString()))
-                .andExpect(jsonPath("$.emailStatus").value("sent"));
+                .andExpect(jsonPath("$.emailStatus").value("sent"))
+                .andExpect(jsonPath("$.resumeEmailStatus").value("not_requested"));
         var order = inOrder(service, confirmation);
         order.verify(service).application(app);
         order.verify(confirmation).sendApplication(app, id);
@@ -140,7 +195,7 @@ class DatabaseSubmissionControllerTest {
                 new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Database submission unavailable"));
         mvc.perform(post("/api/grievances").secure(true).contentType(MediaType.APPLICATION_JSON).content("{}"))
                 .andExpect(status().isServiceUnavailable());
-        verifyNoInteractions(confirmation);
+        verifyNoInteractions(confirmation, mailService);
     }
 
     @Test
@@ -152,7 +207,7 @@ class DatabaseSubmissionControllerTest {
                 new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Database submission unavailable"));
         mvc.perform(post("/api/applications").secure(true).contentType(MediaType.APPLICATION_JSON).content("{}"))
                 .andExpect(status().isServiceUnavailable());
-        verifyNoInteractions(confirmation);
+        verifyNoInteractions(confirmation, mailService);
     }
 
     @Test

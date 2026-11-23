@@ -7,6 +7,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Properties;
+import java.util.UUID;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
 
@@ -26,8 +27,39 @@ import org.springframework.mock.web.MockMultipartFile;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 
 class SubmissionMailServiceTest {
+    @Test
+    void sendsApplicationAndResumeToConfiguredRecipient() throws Exception {
+        GreenMail server = new GreenMail(new ServerSetup(0, "127.0.0.1", "smtp"));
+        try {
+            server.start();
+            JavaMailSenderImpl sender = new JavaMailSenderImpl();
+            sender.setHost("127.0.0.1");
+            sender.setPort(server.getSmtp().getPort());
+            MailSettings settings = new MailSettings("sender@example.com", "admin@example.com",
+                    "", 993, "", "", "INBOX");
+            SubmissionMailService service = new SubmissionMailService(sender, settings, new ObjectMapper());
+            UUID id = UUID.randomUUID();
+            var application = new DatabaseSubmissionValidator.Application("Candidate", "+919876543210",
+                    "candidate@example.com", "job_seeker", "Pune", "v1");
+            service.sendApplication(application, id,
+                    new MockMultipartFile("file", "resume.pdf", "application/pdf", new byte[]{1, 2}));
+            assertTrue(server.waitForIncomingEmail(5000, 1));
+            var message = server.getReceivedMessages()[0];
+            assertEquals("admin@example.com", message.getAllRecipients()[0].toString());
+            assertTrue(message.getSubject().contains(id.toString()));
+            jakarta.mail.Multipart content = (jakarta.mail.Multipart) message.getContent();
+            jakarta.mail.Multipart body = (jakarta.mail.Multipart) content.getBodyPart(0).getContent();
+            assertTrue(body.getBodyPart(0).getContent().toString().contains("candidate@example.com"));
+            assertEquals("resume.pdf", content.getBodyPart(1).getFileName());
+            assertArrayEquals(new byte[]{1, 2}, content.getBodyPart(1).getInputStream().readAllBytes());
+        } finally {
+            server.stop();
+        }
+    }
+
     @Test
     void sendsAndReadsOnlySubmissionsWithoutMarkingThemRead(@TempDir Path tempDir) throws Exception {
         Path keystore = tempDir.resolve("mail-test.p12");

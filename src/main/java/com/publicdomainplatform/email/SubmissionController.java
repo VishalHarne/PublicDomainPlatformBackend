@@ -50,17 +50,22 @@ class SubmissionController {
                                      @RequestHeader(value = "X-Turnstile-Token", required = false) String token)
             throws MessagingException, IOException {
         requireObject(data);
+        validateResume(file);
+        turnstile.verify(token);
+        return Map.of("id", mailService.send("resume", data, file), "status", "sent");
+    }
+
+    static void validateResume(MultipartFile file) {
         if (file != null) {
             String filename = file.getOriginalFilename();
-            if (file.isEmpty() || filename == null || filename.contains("/") || filename.contains("\\")
+            if (file.isEmpty() || file.getSize() > 10L * 1024 * 1024 || filename == null
+                    || filename.contains("/") || filename.contains("\\")
                     || !(filename.toLowerCase(Locale.ROOT).endsWith(".pdf")
                     || filename.toLowerCase(Locale.ROOT).endsWith(".doc")
                     || filename.toLowerCase(Locale.ROOT).endsWith(".docx"))) {
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "File must be a non-empty PDF, DOC or DOCX");
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "File must be a non-empty PDF, DOC or DOCX up to 10 MB");
             }
         }
-        turnstile.verify(token);
-        return Map.of("id", mailService.send("resume", data, file), "status", "sent");
     }
 
     @GetMapping("/getData")
